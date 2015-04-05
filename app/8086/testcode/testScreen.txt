@@ -1,0 +1,223 @@
+    jmp main
+
+/* -----------------------------------------------------------------------------
+   Draws a 10x10 block (4 planar, 16 colours).
+
+Input:
+   ES: 0xA000
+   AX: screen width divided by 8
+   BL: colour of the block to draw
+   CX: x-coordinate
+   DX: y-coordinate
+   Write mode: 3
+----------------------------------------------------------------------------- */
+drawBlock16:
+    push ax
+    push cx
+    push dx
+    push bp
+    push di
+
+    sub sp, 6
+    mov bp, sp
+
+    mov [bp + 4], ax
+    dec word ptr [bp + 4]
+    mul dx
+    mov di, ax
+    mov ax, cx             // ax: x-coordinate
+    shr ax, 1
+    shr ax, 1
+    shr ax, 1              // ax: x-coordinate / 8
+    add di, ax
+
+    and cx, 7              // cx: x-coordinate % 8
+    mov dl, 0xFF
+    shr dl, cl
+    mov [bp], dl           // place left-mask into SS:[BP]
+
+    mov word ptr [bp + 2], 0
+    xor cx, 0xFFFF
+    inc cx                 // cx: -(x % 8)
+    add cx, 8              // cx: pixels drawn in first byte
+    xor cx, 0xFFFF
+    inc cx                 // cx: -(pixels drawn in first byte)
+    add cx, 10             // cx: add block width to get number of pixels left
+    cmp cx, 8
+    jb drawBlock16_calcRightMask
+
+    mov byte ptr [bp + 2], 1
+    dec word ptr [bp + 4]
+    sub cx, 8
+
+drawBlock16_calcRightMask:
+    mov dl, 0xFF
+    shr dl, cl
+    xor dl, 0xFF
+    mov [bp + 1], dl       // place right-mask into SS:[BP+1]
+
+    mov dh, 0
+    sub dh, dl
+    sbb word ptr [bp + 4], 0
+
+    mov dx, 0x3CE
+    mov al, 0
+    out dx, al
+    inc dx
+    mov al, bl
+    out dx, al             // colour in set/reset register
+
+    mov cx, 10             // set height of block to draw
+
+drawBlock16_writeNextLine:
+    push cx
+
+    mov al, es:[di]        // fill latches with dummy read
+    mov al, [bp]           // get left-mask
+    stosb
+    mov cx, [bp + 2]       // number of times 8 pixels can be written
+
+    jcxz drawBlock16_writeRightMask
+
+    mov al, 0xFF
+    rep stosb
+
+drawBlock16_writeRightMask:
+    mov al, es:[di]        // fill latches with dummy read
+    mov al, [bp + 1]       // get right-mask
+    cmp al, 0
+    jz drawBlock16_nextLine
+    stosb
+
+drawBlock16_nextLine:
+    add di, [bp + 4]
+    pop cx
+    loop drawBlock16_writeNextLine
+
+    add sp, 6
+
+    pop di
+    pop bp
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+
+/* -----------------------------------------------------------------------------
+   Draws a 10x10 block (linear, 256 colours).
+
+Input:
+   ES: 0xA000
+   BL: colour of the block to draw
+   CX: x-coordinate
+   DX: y-coordinate
+----------------------------------------------------------------------------- */
+drawBlock256:
+    push ax
+    push cx
+    push dx
+    push di
+
+    mov ax, 320
+    mul dx
+    mov di, ax
+    add di, cx
+
+    mov cx, 10             // set height of block to draw
+
+drawBlock256_writeNextLine:
+    push cx
+
+    mov al, bl
+    mov cx, 10             // set width of block to draw
+    rep stosb
+
+    add di, 310
+    pop cx
+    loop drawBlock256_writeNextLine
+
+    pop di
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+
+main:
+    mov ax, 0xA000
+    mov es, ax
+
+/* Mode D (320 x 200 x 16): */
+    mov ax, 0xD
+    int 0x10
+
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    or al, 3
+    out dx, al             // set write mode 3
+
+
+    mov ax, 320 / 8
+    xor bx, bx
+    xor dx, dx
+    xor si, si
+    mov cx, 16             // 16 blokjes tekenen
+
+drawNextBlock16:
+    push cx
+    mov cx, si
+    call drawBlock16
+    add si, 12
+    inc bx
+    pop cx
+    loop drawNextBlock16
+
+
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    and al, 0xFC
+    out dx, al             // set write mode 0 back
+
+    xor ax, ax
+    int 0x16
+
+
+/* Mode 13 (320 x 200 x 256): */
+    mov ax, 0x13
+    int 0x10
+
+    xor bx, bx
+    xor dx, dx
+    xor si, si
+    mov cx, 16             // 16 rijen met blokjes tekenen
+
+drawNextRow256:
+    push cx
+    mov cx, 16             // 16 blokjes per rij tekenen
+
+drawNextBlock256:
+    push cx
+    mov cx, si
+    call drawBlock256
+    add si, 12
+    inc bx
+    pop cx
+    loop drawNextBlock256
+
+    pop cx
+    xor si, si
+    add dx, 12
+    loop drawNextRow256
+
+    xor ax, ax
+    int 0x16
+
+    push cs
+    pop es

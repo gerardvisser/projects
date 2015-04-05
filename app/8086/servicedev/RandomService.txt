@@ -1,0 +1,29 @@
+Service gegevensgebied na inladen: vanaf offset 0150; referentie: DS:0000.
+
+DS:0000 - DS:0106: array (word[131])
+DS:0106 - DS:0108: M1, periode van de eerste generator
+DS:0108 - DS:010A: M1/2, halve periode van de eerste generator
+DS:010A - DS:010C: A1, factor van de eerste generator
+DS:010C - DS:010E: S1, seed van de eerste generator
+DS:010E - DS:0110: A2, factor van de tweede generator
+DS:0110 - DS:0112: S2, seed van de tweede generator
+
+CS:0000 bevindt zich op DS:0110 of vanaf offset 0260 na inladen.
+
+CS:0002 - CS:0026: PROC. nextInt voor generator 1.
+                   Tast aan: AX, DX.
+                   Returns:
+                     AX: volgende getal.
+
+CS:0026 - CS:0034: PROC. nextInt voor generator 2.
+                   Tast aan: AX, DX.
+                   Returns:
+                     AX: volgende getal.
+
+CS:0034 - CS:00D0: FAR PROC. init voor generator 3. (aanroep: CALL FAR CS:0034)
+                   Tast aan: AX, CX, DX, BX, SI, DI.
+
+CS:00D0 - CS:00F1: INT-Service type FF: nextInt voor generator 3. (aanroep: INT FF)
+                   Tast aan: AX.
+                   Returns:
+                     AX: volgende getal.

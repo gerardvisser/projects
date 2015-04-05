@@ -1,0 +1,2237 @@
+/*
+
+De Videoservice definieert een aantal functies: de functies worden onderscheiden
+aan de hand van een nummer, dat in AH dient te worden geladen, alvorens int 0x10
+aangeroepen wordt.
+    Een overzicht van de functies:
+ 0: set video mode.
+ 1: set cursor type.
+ 2: set cursor position.
+ 3: read cursor position.
+      Returns: CX, DX
+ 4: (read light pen position.) ?
+ 5: set active display page.
+ 6: scroll active page up.
+ 7: scroll active page down.
+ 8: read character/attribute at current cursor position.
+      Returns: AX
+ 9: write character/attribute at current cursor position.
+10: write character at current cursor position.
+11: set colour palette.
+12: write pixel.
+13: read pixel.
+      Returns: AX
+14: write teletype to active page:
+    write character at current cursor position and update position;
+    if the cursor advances to the end of last line, the page
+    scrolls up.
+15: read current video state.
+      Returns: AX, BX
+
+
+BIOS variables:
+
+0000:010C  [4] (int 0x43) Pointer to a table with font data.
+
+0000:0449  [1] Currently active video mode.
+0000:044A  [2] Screen width in text columns.
+0000:044C  [2] Length in bytes of video area.
+0000:044E  [2] Offset from video segment of active video memory page.
+0000:0450 [16] Cursor locations, 2 bytes per page: low=column, high=row.
+
+0000:0462  [1] Currently active video page number.
+
+0000:0484  [1] Text rows - 1
+0000:0485  [2] Scan lines per character
+
+*/
+
+DS:
+functionOffsetTableStart:
+    dw setVideoMode
+    dw setCursorType
+    dw setCursorPosition
+    dw readCursorPosition
+    dw returnFromVideoInterrupt
+    dw setPage
+    dw scrollUp
+    dw scrollDown
+    dw readCharAttrAtCursor
+    dw writeCharAttrAtCursor
+    dw writeCharAtCursor
+    dw setPalette
+    dw writePixel
+    dw readPixel
+    dw writeCharAsTTY
+    dw readVideoState
+functionOffsetTableEnd:
+
+scrollUpTableStart:
+    dw scrollUp_text
+    dw scrollUp_text
+    dw scrollUp_text
+    dw scrollUp_text
+    dw scrollUp_320x200x4
+    dw scrollUp_320x200x4
+    dw scrollUp_640x200x2
+    dw scrollUp_text
+    dw scrollUp_text
+    dw scrollUp_text
+    dw scrollUp_320x200x4
+    dw scrollUp_320x200x4
+    dw scrollUp_640x200x2
+    dw scrollUp_gfx16
+    dw scrollUp_gfx16
+    dw scrollUp_gfx16
+    dw scrollUp_gfx16
+    dw scrollUp_gfx16
+    dw scrollUp_gfx16
+    dw scrollUp_320x200x256
+
+scrollDownTableStart:
+    dw scrollDown_text
+    dw scrollDown_text
+    dw scrollDown_text
+    dw scrollDown_text
+    dw scrollDown_320x200x4
+    dw scrollDown_320x200x4
+    dw scrollDown_640x200x2
+    dw scrollDown_text
+    dw scrollDown_text
+    dw scrollDown_text
+    dw scrollDown_320x200x4
+    dw scrollDown_320x200x4
+    dw scrollDown_640x200x2
+    dw scrollDown_gfx16
+    dw scrollDown_gfx16
+    dw scrollDown_gfx16
+    dw scrollDown_gfx16
+    dw scrollDown_gfx16
+    dw scrollDown_gfx16
+    dw scrollDown_320x200x256
+
+writeCharAttrAtCursorTableStart:
+    dw writeCharAttrAtCursor_text
+    dw writeCharAttrAtCursor_text
+    dw writeCharAttrAtCursor_text
+    dw writeCharAttrAtCursor_text
+    dw writeCharAttrAtCursor_320x200x4
+    dw writeCharAttrAtCursor_320x200x4
+    dw writeCharAttrAtCursor_640x200x2
+    dw writeCharAttrAtCursor_text
+    dw writeCharAttrAtCursor_text
+    dw writeCharAttrAtCursor_text
+    dw writeCharAttrAtCursor_320x200x4
+    dw writeCharAttrAtCursor_320x200x4
+    dw writeCharAttrAtCursor_640x200x2
+    dw writeCharAttrAtCursor_gfx16
+    dw writeCharAttrAtCursor_gfx16
+    dw writeCharAttrAtCursor_gfx16
+    dw writeCharAttrAtCursor_gfx16
+    dw writeCharAttrAtCursor_gfx16
+    dw writeCharAttrAtCursor_gfx16
+    dw writeCharAttrAtCursor_320x200x256
+
+videoModeSettings:
+    db 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17     // 3C0: 0 - 7
+    db 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F     // 3C0: 8 - F
+    db 0x04, 0x00                                         // 3C0: 10, 14
+    db 0x27, 0x00, 0xC7, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x0C, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x0F, 0x0A                                   // 3C5: 1, 2, 4
+    db 0x00, 0x00, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x08, 0x00                                         // 0040:0085 (scan lines / char)
+videoModeSettingsEndOfFirstBlock:
+
+    /* Mode 1 */
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07     // 3C0: 0 - 7
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F     // 3C0: 8 - F
+    db 0x04, 0x00                                         // 3C0: 10, 14
+    db 0x27, 0x00, 0xC7, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x0C, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x0F, 0x0A                                   // 3C5: 1, 2, 4
+    db 0x00, 0x00, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x08, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 2 */
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07     // 3C0: 0 - 7
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F     // 3C0: 8 - F
+    db 0x84, 0x01                                         // 3C0: 10, 14
+    db 0x4F, 0x02, 0x8F, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x0C, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x00, 0x0F, 0x0A                                   // 3C5: 1, 2, 4
+    db 0x00, 0x16, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x10, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 3 */
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07     // 3C0: 0 - 7
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F     // 3C0: 8 - F
+    db 0x04, 0x00                                         // 3C0: 10, 14
+    db 0x4F, 0x02, 0x8F, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x0C, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x00, 0x0F, 0x0A                                   // 3C5: 1, 2, 4
+    db 0x00, 0x16, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x10, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 4 */
+    db 0x00, 0x0B, 0x0D, 0x0F, 0x00, 0x0B, 0x0D, 0x0F     // 3C0: 0 - 7
+    db 0x00, 0x0B, 0x0D, 0x0F, 0x00, 0x0B, 0x0D, 0x0F     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x27, 0x00, 0xC7, 0x00                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x0F, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x03, 0x02                                   // 3C5: 1, 2, 4
+    db 0x00, 0x00, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x08, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 5 */
+    db 0x01, 0x02, 0x04, 0x06, 0x01, 0x02, 0x04, 0x06     // 3C0: 0 - 7
+    db 0x01, 0x02, 0x04, 0x06, 0x01, 0x02, 0x04, 0x06     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x27, 0x00, 0xC7, 0x00                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x0F, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x03, 0x02                                   // 3C5: 1, 2, 4
+    db 0x00, 0x00, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x08, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 6 */
+    db 0x00, 0x0F, 0x00, 0x0F, 0x00, 0x0F, 0x00, 0x0F     // 3C0: 0 - 7
+    db 0x00, 0x0F, 0x00, 0x0F, 0x00, 0x0F, 0x00, 0x0F     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x4F, 0x00, 0xC7, 0x00                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x01, 0x06                                   // 3C5: 1, 2, 4
+    db 0x00, 0x00, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x08, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode D */
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07     // 3C0: 0 - 7
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x27, 0x00, 0xC7, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x0F, 0x06                                   // 3C5: 1, 2, 4
+    db 0x00, 0x00, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x08, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode E */
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07     // 3C0: 0 - 7
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x4F, 0x00, 0xC7, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x0F, 0x06                                   // 3C5: 1, 2, 4
+    db 0x00, 0x00, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x08, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode F */
+    db 0x00, 0x0B, 0x0D, 0x0F, 0x00, 0x0B, 0x0D, 0x0F     // 3C0: 0 - 7
+    db 0x00, 0x0B, 0x0D, 0x0F, 0x00, 0x0B, 0x0D, 0x0F     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x4F, 0x02, 0x5D, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x03, 0x06                                   // 3C5: 1, 2, 4
+    db 0x00, 0x08, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x0E, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 10 */
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07     // 3C0: 0 - 7
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x4F, 0x02, 0x5D, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x0F, 0x06                                   // 3C5: 1, 2, 4
+    db 0x00, 0x08, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x0E, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 11 */
+    db 0x00, 0x0F, 0x00, 0x0F, 0x00, 0x0F, 0x00, 0x0F     // 3C0: 0 - 7
+    db 0x00, 0x0F, 0x00, 0x0F, 0x00, 0x0F, 0x00, 0x0F     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x4F, 0x02, 0xDF, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x01, 0x06                                   // 3C5: 1, 2, 4
+    db 0x00, 0x16, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x1D                                               // 0040:0084 (text rows - 1)
+    db 0x10, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 12 */
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07     // 3C0: 0 - 7
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F     // 3C0: 8 - F
+    db 0x05, 0x00                                         // 3C0: 10, 14
+    db 0x4F, 0x02, 0xDF, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x0F, 0x06                                   // 3C5: 1, 2, 4
+    db 0x00, 0x16, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x1D                                               // 0040:0084 (text rows - 1)
+    db 0x10, 0x00                                         // 0040:0085 (scan lines / char)
+
+    /* Mode 13 */
+    db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07     // 3C0: 0 - 7
+    db 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F     // 3C0: 8 - F
+    db 0x45, 0x00                                         // 3C0: 10, 14
+    db 0x27, 0x00, 0xC7, 0x01                             // 3D5: 1, 7, 12, 17
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x00     // 3CF: 0 - 7
+    db 0xFF                                               // 3CF: 8
+    db 0x01, 0x0F, 0x0A                                   // 3C5: 1, 2, 4
+    db 0x00, 0x00, 0x00, 0xC0                             // 0000:010C (pointer to font data)
+    db 0x18                                               // 0040:0084 (text rows - 1)
+    db 0x08, 0x00                                         // 0040:0085 (scan lines / char)
+
+CS:
+startVideoInterrupt:
+    push ds
+    push si
+
+// Set up data segment.
+    mov si, cs
+    sub si, (CS - DS) / 16
+    mov ds, si
+
+// Determine table entry with jump address for requested function.
+    push cx
+    mov si, ax
+    mov cl, 7
+    shr si, cl
+    and si, 0xFFFE
+    pop cx
+
+// Jump to requested function.
+    cmp si, functionOffsetTableEnd - functionOffsetTableStart
+    jnb returnFromVideoInterrupt
+    jmp [si + functionOffsetTableStart]
+
+returnFromVideoInterrupt:
+    pop si
+    pop ds
+    iret
+
+
+/* =============================================================================
+================================================================================
+   Set video mode.
+
+Preconditions:
+  AH: 0
+  AL: mode
+      0   40 x 25 Grayscale
+      1   40 x 25 Colour
+      2   80 x 25 Grayscale
+      3   80 x 25 Colour (Default)
+      4   320 x 200 x 4
+      5   320 x 200 x 4
+      6   640 x 200 x 2
+      D   320 x 200 x 16
+      E   640 x 200 x 16
+      F   640 x 350 x 4
+     10   640 x 350 x 16
+     11   640 x 480 x 2
+     12   640 x 480 x 16
+     13   320 x 200 x 256
+============================================================================= */
+setVideoMode:
+    cmp al, 0x13
+    ja returnFromVideoInterrupt
+
+    push ax
+    push dx
+    push di
+    push es
+
+    cmp al, 7
+    jb setVideoMode_1
+
+    sub al, 6
+
+setVideoMode_1:
+    cld
+    mov ah, 0
+    mov si, videoModeSettingsEndOfFirstBlock - videoModeSettings
+    mul si
+    mov si, ax
+    add si, videoModeSettings
+
+    mov dx, 0x3C3
+    mov al, 0
+    out dx, al             // Disable video
+
+    mov dx, 0x3DA
+    in al, dx              // Reset 3C0 to writing index.
+
+    mov ah, 0
+    mov dx, 0x3C0
+
+setVideoMode_l1:
+    mov al, ah
+    out dx, al
+    lodsb
+    out dx, al
+    inc ah
+    cmp ah, 0x11
+    jb setVideoMode_l1
+
+    mov al, 0x14
+    out dx, al
+    lodsb
+    out dx, al
+
+    mov dx, 0x3D4
+    mov al, 1
+    out dx, al
+    inc dx
+    lodsb
+    out dx, al
+
+    dec dx
+    mov al, 0x7
+    out dx, al
+    inc dx
+    lodsb
+    out dx, al
+
+    dec dx
+    mov al, 0x12
+    out dx, al
+    inc dx
+    lodsb
+    out dx, al
+
+    dec dx
+    mov al, 0x17
+    out dx, al
+    inc dx
+    lodsb
+    out dx, al
+
+    mov ah, 0
+    mov dx, 0x3CF
+
+setVideoMode_l2:
+    mov al, ah
+    dec dx
+    out dx, al
+    inc dx
+    lodsb
+    out dx, al
+    inc ah
+    cmp ah, 9
+    jb setVideoMode_l2
+
+    mov dx, 0x3C4
+    mov al, 1
+    out dx, al
+    inc dx
+    lodsb
+    out dx, al
+
+    dec dx
+    mov al, 2
+    out dx, al
+    inc dx
+    lodsb
+    out dx, al
+
+    dec dx
+    mov al, 4
+    out dx, al
+    inc dx
+    lodsb
+    out dx, al
+
+    mov di, 0
+    mov es, di
+    mov di, 0x10C
+    movsw
+    movsw                  // Pointer to font data written
+
+    mov di, 0x484
+    movsb                  // Text rows minus one written
+    movsw                  // Scan lines per character written
+
+    mov dx, 0x3C3
+    mov al, 1
+    out dx, al             // Enable video
+
+    pop es
+    pop di
+    pop dx
+    pop ax
+
+    /* Set the active video mode at 0040:0049. */
+    mov si, 0x40
+    mov ds, si
+    mov [0x49], al
+
+indirectlyReturnFromVideoInterrupt:
+    jmp returnFromVideoInterrupt
+
+
+
+/* =============================================================================
+================================================================================
+   Write character/attribute at current cursor position.
+
+Preconditions:
+  AH: 9
+  AL: character to write
+  BH: display page (ignored for graphics modes)
+  BL: attribute/colour of character
+  CX: number of characters to write
+============================================================================= */
+writeCharAttrAtCursor:
+    jcxz indirectlyReturnFromVideoInterrupt
+
+    push ax
+    push cx
+    push dx
+    push bx
+    push di
+    push es
+
+    cld
+    xor di, di
+    mov es, di
+    es:
+    mov si, [0x449]        // get current video mode (1 byte)
+    and si, 0xFF           // si: current video mode
+    shl si, 1
+    jmp [si + writeCharAttrAtCursorTableStart]
+
+
+/* =============================================================================
+   Write character/attribute at cursor position: text modes.
+
+Preconditions:
+  AL: character to write
+  BH: display page
+  BL: attribute
+  CX: number of characters to draw
+  DI: 0
+============================================================================= */
+writeCharAttrAtCursor_text:
+    mov ds, di
+    mov di, 0xB800
+    mov es, di
+
+    mov ah, bl             // attribute in ah
+    push ax                // save attribute and char.
+
+    mov bl, bh             // display page to bl
+    xor bh, bh             // clear bh
+
+    mov ax, [0x44C]        // get regen buffer size
+    mul bx
+    mov di, ax             // put regen buffer start for display page in di
+
+    shl bx, 1              // display page times 2
+    add bx, 0x450
+    mov al, [bx+1]
+    cbw                    // cursor line now in ax
+    mov dx, [0x44A]        // get screen width in text columns
+    shl dx, 1
+    mul dx
+    mov dl, [bx]           // cursor column in dx (dh will already be 0, because of previous mul-instruction)
+    shl dx, 1              // multiply by 2
+    add ax, dx
+    add di, ax             // ES:DI now contains destination address
+
+    pop ax                 // get attribute and char back
+
+    rep stosw              // write them
+
+writeCharAttrAtCursor_returnFromVideoInterrupt:
+    pop es
+    pop di
+    pop bx
+    pop dx
+    pop cx
+    pop ax
+    jmp returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Write character/colour at cursor position: 320 x 200 x 4.
+
+Preconditions:
+  AL: character to write
+  BH: display page
+  BL: colour
+  CX: number of characters to draw
+  DI: 0
+============================================================================= */
+writeCharAttrAtCursor_320x200x4:
+    mov ds, di
+    mov di, 0xB800
+    mov es, di
+
+    mov ah, 0
+    mov si, ax             // si contains character to display
+    shl si, 1
+    shl si, 1
+    shl si, 1              // multiplied by 8 (8 bytes of pixel info per character)
+
+    mov al, [0x451]        // cursor line now in ax (ah still 0)
+    mov dx, 320
+    mul dx
+    mov di, ax
+    mov dl, [0x450]        // cursor column in dx (dh will already be 0, because of previous mul-instruction)
+
+
+    and bx, 3              // only four colours available
+                           // bx now contains colour to draw with
+
+    shl dx, 1              // multiplied by 2 (width of a character is 8 pixels; 4 pixels per byte)
+    add di, dx             // ES:DI now contains destination address
+
+
+    mov ds, [0x10E]        // Load font segment into ds.
+                           // DS:SI points to first byte of character to draw
+
+drawNChars_320x200x4:
+    push cx                // save number of characters to write
+    push si
+    push di
+    mov cx, 4
+
+drawChar_320x200x4:
+    push cx
+
+    mov cx, 8              // 8 pixels per line
+    lodsb                  // load bitmap for line to draw
+    mov dh, al             // move it to dh
+    xor ax, ax             // clear ax
+
+assembleLine:
+    shl ax, 1
+    shl ax, 1              // shifted 2 bits to the left
+    shl dx, 1              // shift a bit onto carry-flag
+    jnc assembleLineLoop
+    or ax, bx              // set foreground colour for pixel
+
+assembleLineLoop:
+    loop assembleLine
+
+    xchg ah, al            // before writing word...
+    stosw
+    add di, 0x1FFE         // Address of next line to draw
+
+
+    mov cx, 8              // 8 pixels per line
+    lodsb                  // load bitmap for line to draw
+    mov dh, al             // move it to dh
+    xor ax, ax             // clear ax
+
+assembleLine2:
+    shl ax, 1
+    shl ax, 1              // shifted 2 bits to the left
+    shl dx, 1              // shift a bit onto carry-flag
+    jnc assembleLineLoop2
+    or ax, bx              // set foreground colour for pixel
+
+assembleLineLoop2:
+    loop assembleLine2
+
+    xchg ah, al            // before writing word...
+    stosw
+    sub di, 0x1FB2         // Address of next line to draw
+
+    pop cx
+    loop drawChar_320x200x4
+
+    pop di
+    add di, 2              // 8 pixels to the right of previous char
+    pop si
+    pop cx
+    loop drawNChars_320x200x4
+    jmp writeCharAttrAtCursor_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Write character/colour at cursor position: 640 x 200 x 2.
+
+Preconditions:
+  AL: character to write
+  BH: display page
+  BL: colour
+  CX: number of characters to draw
+  DI: 0
+============================================================================= */
+writeCharAttrAtCursor_640x200x2:
+    mov ds, di
+    mov di, 0xB800
+    mov es, di
+
+    mov ah, 0
+    mov si, ax             // si contains character to display
+    shl si, 1
+    shl si, 1
+    shl si, 1              // multiplied by 8 (8 bytes of pixel info per character)
+
+    mov al, [0x451]        // cursor line now in ax (ah still 0)
+    mov dx, 320
+    mul dx
+    mov di, ax
+    mov dl, [0x450]        // cursor column in dx (dh will already be 0, because of previous mul-instruction)
+
+
+    add di, dx             // ES:DI now contains destination address
+
+    mov ds, [0x10E]        // Load font segment into ds.
+                           // DS:SI points to first byte of character to draw
+
+drawNChars_640x200x2:
+    push cx                // save number of characters to draw
+    push si                // save location of bitmap of character to draw
+    mov cx, 4
+
+drawChar_640x200x2:
+    movsb                  // draw bitmap for line
+    add di, 0x1FFF         // Address of next line to draw
+
+    movsb                  // draw bitmap for line
+    sub di, 0x1FB1         // Address of next line to draw
+
+    loop drawChar_640x200x2
+
+    sub di, 0x13F          // 8 pixels to the right of previous char
+    pop si
+    pop cx
+    loop drawNChars_640x200x2
+    jmp writeCharAttrAtCursor_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Write character/colour at cursor position: planar 16 colour modes.
+
+Preconditions:
+  AL: character to write
+  BH: display page
+  BL: colour
+  CX: number of characters to draw
+  DI: 0
+============================================================================= */
+writeCharAttrAtCursor_gfx16:
+    push bp
+    sub sp, 6              // allocate 6 bytes on the stack
+    mov bp, sp
+
+    mov ds, di
+    mov di, 0xA000
+    mov es, di
+
+    mul byte ptr [0x485]   // character to display times scanlines per character
+    mov si, ax
+    add si, [0x10C]        // add start of font data table
+
+    mov ax, [0x485]        // ax: scanlines per character
+    mov [bp], ax           // SS:BP scanlines per character
+    mov dx, [0x44A]        // dx: screen width in text columns
+    mov [bp+2], dx
+    dec word ptr [bp+2]    // SS:BP+2 screen width in text columns minus one
+    mul dx
+    mov [bp+4], ax
+    dec word ptr [bp+4]    // SS:BP+4 screen width times scanlines/char minus one
+
+    mov dl, [0x451]        // dx: cursor line (dh will already be 0, because of previous mul-instruction)
+    mul dx
+    mov di, ax
+    mov dl, [0x450]        // cursor column in dx (dh will already be 0, because of previous mul-instruction)
+    add di, dx             // ES:DI now contains destination address
+
+    mov ds, [0x10E]        // Load font segment into ds.
+                           // DS:SI points to first byte of character to draw
+
+    mov dx, 0x3CE
+    mov al, 0
+    out dx, al
+    inc dx
+    mov al, bl
+    out dx, al             // colour in set/reset register
+
+    dec dx
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    or al, 3
+    out dx, al             // set write mode 3
+
+drawNChars_gfx16:
+    push cx                // save number of characters to draw
+    push si                // save location of bitmap of character to draw
+    mov cx, [bp]
+
+drawChar_gfx16:
+    mov al, es:[di]        // fill latches with dummy read
+    movsb                  // draw bitmap for line
+    add di, [bp+2]         // Address of next line to draw
+
+    loop drawChar_gfx16
+
+    sub di, [bp+4]         // 8 pixels to the right of previous char
+    pop si
+    pop cx
+    loop drawNChars_gfx16
+
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    and al, 0xFC
+    out dx, al             // set write mode 0 back
+
+    add sp, 6
+    pop bp
+    jmp writeCharAttrAtCursor_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Write character/colour at cursor position: 320 x 200 x 256.
+
+Preconditions:
+  AL: character to write
+  BH: display page
+  BL: colour
+  CX: number of characters to draw
+  DI: 0
+============================================================================= */
+writeCharAttrAtCursor_320x200x256:
+    mov ds, di
+    mov di, 0xA000
+    mov es, di
+
+    mul byte ptr [0x485]   // character to display times scanlines per character
+    mov si, ax
+    add si, [0x10C]        // add start of font data table
+
+    mov dh, 0
+    mov dl, [0x451]        // dx: cursor line
+    mov ax, 8 * 40         // ax: scanlines per character times screen width in text columns
+    mul dx
+    mov di, ax
+    mov dl, [0x450]        // cursor column in dx (dh will already be 0, because of previous mul-instruction)
+    add di, dx
+                           // Now multiply by character width (8)
+    shl di, 1
+    shl di, 1
+    shl di, 1              // ES:DI now contains destination address
+
+    mov ds, [0x10E]        // Load font segment into ds.
+                           // DS:SI points to first byte of character to draw
+
+drawNChars_320x200x256:
+    push cx                // save number of characters to draw
+    push si                // save location of bitmap of character to draw
+    mov cx, 8
+
+drawChar_320x200x256:
+    push cx
+    lodsb                  // load bitmap for line to draw
+    mov cx, 8              // 8 pixels per line
+
+drawChar_drawLine320x200x256:
+    mov bh, 0xFF
+    mov dl, bl             // move colour to dl
+    shl al, 1              // shift a bit onto carry-flag
+    adc bh, 0
+    and es:[di], bh
+    xor bh, 0xFF
+    and dl, bh
+    or es:[di], dl
+    inc di
+    loop drawChar_drawLine320x200x256
+
+    add di, 312            // address of next line to draw
+
+    pop cx
+    loop drawChar_320x200x256
+
+    sub di, 8 * 319        // 8 pixels to the right of previous char
+    pop si
+    pop cx
+    loop drawNChars_320x200x256
+
+    jmp writeCharAttrAtCursor_returnFromVideoInterrupt
+
+
+
+
+/* =============================================================================
+================================================================================
+   Set cursor position.
+
+Preconditions:
+  AH: 2
+  BH: display page (should be 0 for modes 4, 5, 6)
+  DH: line
+  DL: column
+============================================================================= */
+setCursorPosition:
+    push bx
+
+    mov si, 0x40
+    mov ds, si
+
+    mov bl, bh             // display page to bl
+    and bx, 7              // only eight pages available
+    shl bx, 1              // display page times 2
+    mov [bx+0x50], dx
+
+    pop bx
+    jmp returnFromVideoInterrupt
+
+
+
+/* =============================================================================
+================================================================================
+   Read cursor position.
+
+Preconditions:
+  AH: 3
+  BH: display page (should be 0 for modes 4, 5, 6)
+
+Returns:
+  DH: line
+  DL: column
+  CX: cursor size/shape
+============================================================================= */
+readCursorPosition:
+    mov si, 0x40
+    mov ds, si
+
+    mov si, bx             // high eight bits of si contain display page
+    mov cl, 7              // prepare to shift them seven bits to the right
+    shr si, cl             // shift them
+    and si, 0xE            // si contains display page times 2
+    mov dx, [si+0x50]      // cursor line and column into dx
+    mov cx, [0x60]         // cursor start, end scan line into cx
+
+    jmp returnFromVideoInterrupt
+
+
+
+setCursorType:
+setPage:
+    jmp returnFromVideoInterrupt
+
+
+
+/* =============================================================================
+================================================================================
+   Scroll active page up.
+
+Preconditions:
+  AH: 6
+  AL: number of rows to scroll up
+      (0 means all rows, clearing the area specified by CX and DX)
+  BH: attribute to be used on blank row
+  CH: row of upper left corner
+  CL: column of upper left corner
+  DH: row of lower right corner
+  DL: column of lower right corner
+
+Stack:
+  SS:BP    [2]  width (in characters) of a row.
+  SS:BP+2  [4]  ???
+============================================================================= */
+scrollUp:
+    push ax
+    push cx
+    push dx
+    push bx
+    push bp
+    push di
+    push es
+    sub sp, 6              // allocate 6 bytes on the stack
+    mov bp, sp
+
+    cld
+    xor di, di
+    mov es, di
+
+    inc dl
+    sub dl, cl             // width of a row
+    inc dh
+    sub dh, ch             // height of area to scroll
+
+    mov byte ptr [bp+1], 0
+    mov [bp], dl           // SS:BP: width of a row
+
+    cmp al, 0              // clear whole area?
+    jnz scrollUp_correctedAL
+
+    mov al, dh
+
+scrollUp_correctedAL:
+    sub dh, al             // number of rows to copy = height of area to scroll - number of rows to scroll
+    mov dl, al             // dl: number of rows to scroll
+    mov ax, es:[0x44A]     // get screen width in text columns
+
+    mov si, es:[0x449]     // get current video mode (1 byte)
+    and si, 0xFF           // si: current video mode
+    shl si, 1
+    jmp [si + scrollUpTableStart]
+
+
+/* =============================================================================
+   Scroll active page up: text modes.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: attribute to be used on blank row
+  CH: row of upper left corner
+  CL: column of upper left corner
+  DH: number of rows to copy = height of area to scroll - number of rows to scroll
+  DL: number of rows to scroll up
+
+Stack:
+  SS:BP    [2]  width (in characters) of a row.
+  SS:BP+2  [2]  number to add to index registers to point to next row after
+                copying a row.
+  SS:BP+4  [2]  ???
+============================================================================= */
+scrollUp_text:
+    push ax                // push screen width
+
+    mul ch
+    mov ch, 0              // cx: column of upper left corner
+    add ax, cx
+    shl ax, 1              // multiply by two for attribute byte
+    mov di, ax
+    add di, es:[0x44E]     // add offset in regen buffer of active page
+
+    pop cx                 // cx: screen width in text columns
+
+    mov ax, cx             // ax: screen width in text columns
+    mul dl                 // multiply by number of rows to scroll
+    shl ax, 1              // multiply by two for attribute byte
+    mov si, ax
+    add si, di
+
+    mov ax, 0xB800
+    mov es, ax
+    mov ds, ax
+
+    sub cx, [bp]           // screen width - row width
+    shl cx, 1              // multiply by two for attribute byte
+    mov [bp+2], cx
+
+    cmp dh, 0
+    jna scrollUp_doneCopyingLines
+
+scrollUp_copyNextLine:
+    mov cx, [bp]           // cx: width of row
+    rep movsw              // copy a row
+    add si, [bp+2]
+    add di, [bp+2]
+    dec dh
+    jnz scrollUp_copyNextLine
+
+scrollUp_doneCopyingLines:
+    mov ah, bh             // attribute for blank row
+    mov al, ' '            // space into al
+
+scrollUp_clearNextLine:
+    mov cx, [bp]           // cx: width of row
+    rep stosw              // clear a row
+    add si, [bp+2]
+    add di, [bp+2]
+    dec dl
+    jnz scrollUp_clearNextLine
+
+scrollUp_returnFromVideoInterrupt:
+    add sp, 6
+    pop es
+    pop di
+    pop bp
+    pop bx
+    pop dx
+    pop cx
+    pop ax
+    jmp returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Scroll active page up: 320 x 200 x 4.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: attribute to be used on blank row
+  CH: row of upper left corner
+  CL: column of upper left corner
+  DH: number of rows to copy = height of area to scroll - number of rows to scroll
+  DL: number of rows to scroll up
+
+Stack:
+  SS:BP    [2]  width (in characters) of a row.
+  SS:BP+2  [2]  number to add to index registers to point to next odd line after
+                copying an even line.
+  SS:BP+4  [2]  number to subtract from index registers to point to next even
+                line after copying an odd line.
+============================================================================= */
+scrollUp_320x200x4:
+    shl dx, 1
+    shl dx, 1              // both dh and dl times half the hight of a row
+
+    mul ch                 // ax: row of upper left corner times screen width
+    shl ax, 1
+    shl ax, 1              // times half the hight of a row (the other half of lines
+                           // is located in another part of memory)
+    mov ch, 0              // cx: column of upper left corner
+    add ax, cx
+    shl ax, 1              // multiply by two: characters are 2 bytes wide in this mode
+    mov di, ax
+
+    mov ax, es:[0x44A]     // ax: screen width in text columns
+    mul dl                 // multiply by number of rows to scroll (times half the hight of a row)
+    shl ax, 1              // times two for 2 byte wide characters
+    mov si, ax
+    add si, di
+
+    mov ax, 0xB800
+    mov es, ax
+    mov ds, ax
+
+    mov ax, [bp]           // ax: width of row
+    shl ax, 1              // times two for 2 byte wide characters
+    mov word ptr [bp+2], 0x2000
+    sub [bp+2], ax
+    mov word ptr [bp+4], 0x1FB0
+    add [bp+4], ax
+
+    cmp dh, 0
+    jna scrollUp_doneCopyingLines_320x200x4
+
+scrollUp_copyNextLine_320x200x4:
+    mov cx, [bp]           // cx: width of row
+    rep movsw              // copy a line
+    add si, [bp+2]
+    add di, [bp+2]
+
+    mov cx, [bp]           // cx: width of row
+    rep movsw              // copy a line
+    sub si, [bp+4]
+    sub di, [bp+4]
+
+    dec dh
+    jnz scrollUp_copyNextLine_320x200x4
+
+scrollUp_doneCopyingLines_320x200x4:
+    mov ah, bh             // bit pattern for blank row
+    mov al, bh             // bit pattern for blank row
+
+scrollUp_clearNextLine_320x200x4:
+    mov cx, [bp]           // cx: width of row
+    rep stosw              // clear a line
+    add si, [bp+2]
+    add di, [bp+2]
+
+    mov cx, [bp]           // cx: width of row
+    rep stosw              // clear a line
+    sub si, [bp+4]
+    sub di, [bp+4]
+
+    dec dl
+    jnz scrollUp_clearNextLine_320x200x4
+
+    jmp scrollUp_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Scroll active page up: 640 x 200 x 2.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: attribute to be used on blank row
+  CH: row of upper left corner
+  CL: column of upper left corner
+  DH: number of rows to copy = height of area to scroll - number of rows to scroll
+  DL: number of rows to scroll up
+
+Stack:
+  SS:BP    [2]  width (in characters) of a row.
+  SS:BP+2  [2]  number to add to index registers to point to next odd line after
+                copying an even line.
+  SS:BP+4  [2]  number to subtract from index registers to point to next even
+                line after copying an odd line.
+============================================================================= */
+scrollUp_640x200x2:
+    shl dx, 1
+    shl dx, 1              // both dh and dl times half the hight of a row
+
+    mul ch                 // ax: row of upper left corner times screen width
+    shl ax, 1
+    shl ax, 1              // times half the hight of a row (the other half of lines
+                           // is located in another part of memory)
+    mov ch, 0              // cx: column of upper left corner
+    add ax, cx
+    mov di, ax
+
+    mov ax, es:[0x44A]     // ax: screen width in text columns
+    mul dl                 // multiply by number of rows to scroll (times half the hight of a row)
+    mov si, ax
+    add si, di
+
+    mov ax, 0xB800
+    mov es, ax
+    mov ds, ax
+
+    mov ax, [bp]           // ax: width of row
+    mov word ptr [bp+2], 0x2000
+    sub [bp+2], ax
+    mov word ptr [bp+4], 0x1FB0
+    add [bp+4], ax
+
+    cmp dh, 0
+    jna scrollUp_doneCopyingLines_640x200x2
+
+scrollUp_copyNextLine_640x200x2:
+    mov cx, [bp]           // cx: width of row
+    rep movsb              // copy a line
+    add si, [bp+2]
+    add di, [bp+2]
+
+    mov cx, [bp]           // cx: width of row
+    rep movsb              // copy a line
+    sub si, [bp+4]
+    sub di, [bp+4]
+
+    dec dh
+    jnz scrollUp_copyNextLine_640x200x2
+
+scrollUp_doneCopyingLines_640x200x2:
+    mov al, bh             // bit pattern for blank row
+
+scrollUp_clearNextLine_640x200x2:
+    mov cx, [bp]           // cx: width of row
+    rep stosb              // clear a line
+    add si, [bp+2]
+    add di, [bp+2]
+
+    mov cx, [bp]           // cx: width of row
+    rep stosb              // clear a line
+    sub si, [bp+4]
+    sub di, [bp+4]
+
+    dec dl
+    jnz scrollUp_clearNextLine_640x200x2
+
+    jmp scrollUp_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Scroll active page up: planar 16 colour modes.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: attribute to be used on blank row
+  CH: row of upper left corner
+  CL: column of upper left corner
+  DH: number of rows to copy = height of area to scroll - number of rows to scroll
+  DL: number of rows to scroll up
+
+Stack:
+  SS:BP    [2]  width (in characters) of a row.
+  SS:BP+2  [2]  screen width - row width
+  SS:BP+4  [2]  screen width
+============================================================================= */
+scrollUp_gfx16:
+    mov [bp+4], ax         // SS:BP+4: screen width
+
+    mov di, cx
+    and di, 0xFF           // di: column of upper left corner
+
+    sub ax, [bp]           // ax: screen width - row width
+    mov [bp+2], ax         // SS:BP+2: screen width - row width
+
+    mov ax, [bp+4]         // ax: screen width
+    mul ch                 // ax: screen width * row of upper left corner
+
+    mov cx, es:[0x485]     // cx: char height
+    push dx                // PUSH: rows to copy, rows to scroll
+    mul cx                 // ax: screen width * row of upper left corner * char height
+    add di, ax
+
+    pop dx                 // POP: dx: rows to copy, rows to scroll
+    mov ax, cx             // ax: char height
+    mul dh                 // ax: (height of area to scroll - rows to scroll) * char height
+    push cx                // PUSH: char height
+    mov cx, ax             // cx: (height of area to scroll - rows to scroll) * char height
+
+    pop ax                 // POP: ax: char height
+    mul dl
+    push ax                // PUSH: rows to scroll * char height
+    mul word ptr [bp+4]    // ax: screen width * rows to scroll * char height
+
+    mov si, 0xA000
+    mov es, si
+    mov ds, si
+    mov si, ax             // si: screen width * rows to scroll * char height
+    add si, di
+
+    jcxz scrollUp_doneCopyingLines_gfx16
+
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    or al, 1
+    out dx, al             // set write mode 1
+
+scrollUp_copyNextLine_gfx16:
+    push cx
+    mov cx, [bp]           // cx: row width
+    rep movsb              // copy a line
+    add di, [bp+2]
+    add si, [bp+2]
+
+    pop cx
+    loop scrollUp_copyNextLine_gfx16
+
+scrollUp_doneCopyingLines_gfx16:
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    and al, 0xFC
+    or al, 2
+    out dx, al             // set write mode 2
+
+    mov al, bh             // colour for blank row
+    pop cx                 // POP: cx: rows to scroll * char height
+
+scrollUp_clearNextLine_gfx16:
+    push cx
+    mov cx, [bp]           // cx: row width
+    rep stosb              // clear a line
+    add di, [bp+2]
+    add si, [bp+2]
+
+    pop cx
+    loop scrollUp_clearNextLine_gfx16
+
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    and al, 0xFC
+    out dx, al             // set write mode 0 back
+
+    jmp scrollUp_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Scroll active page up:  320 x 200 x 256.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: attribute to be used on blank row
+  CH: row of upper left corner
+  CL: column of upper left corner
+  DH: number of rows to copy = height of area to scroll - number of rows to scroll
+  DL: number of rows to scroll up
+
+Stack:
+  SS:BP    [2]  width (in characters) of a row times char width.
+  SS:BP+2  [2]  (screen width - row width) * char width.
+  SS:BP+4  [2]  screen width * char width
+============================================================================= */
+scrollUp_320x200x256:
+    shl word ptr [bp], 1
+    shl word ptr [bp], 1
+    shl word ptr [bp], 1   // SS:BP: row width * char width
+
+    shl ax, 1
+    shl ax, 1
+    shl ax, 1              // ax: screen width * char width
+    mov [bp+4], ax         // SS:BP+4: screen width * char width
+
+    mov di, cx
+    and di, 0xFF           // di: column of upper left corner
+    shl di, 1
+    shl di, 1
+    shl di, 1              // di: ulc column * char width
+
+    sub ax, [bp]           // ax: (screen width - row width) * char width
+    mov [bp+2], ax         // SS:BP+2: (screen width - row width) * char width
+
+    and cx, 0xFF00
+    mov ax, cx             // ah: upper left corner row
+    mov cl, 5
+    shr ax, cl             // ax: ulc row * char height
+    push dx                // PUSH: rows to copy, rows to scroll
+    mul word ptr [bp+4]    // ax: screen width * char width * ulc row * char height
+    add di, ax
+
+    pop dx                 // POP: dx: rows to copy, rows to scroll
+    mov al, 8              // al: char height
+    mul dh                 // ax: (height of area to scroll - rows to scroll) * char height
+    mov cx, ax             // cx: (height of area to scroll - rows to scroll) * char height
+    mov al, 8              // al: char height
+    mul dl
+    push ax                // PUSH: rows to scroll * char height
+    mul word ptr [bp+4]    // ax: screen width * char width * rows to scroll * char height
+
+    mov si, 0xA000
+    mov es, si
+    mov ds, si
+    mov si, ax             // si: screen width * char width * rows to scroll * char height
+    add si, di
+
+    jcxz scrollUp_doneCopyingLines_320x200x256
+
+scrollUp_copyNextLine_320x200x256:
+    push cx
+    mov cx, [bp]
+    rep movsb              // copy a line
+    add di, [bp+2]
+    add si, [bp+2]
+
+    pop cx
+    loop scrollUp_copyNextLine_320x200x256
+
+scrollUp_doneCopyingLines_320x200x256:
+    mov al, bh             // colour for blank row
+    pop cx                 // POP: cx: rows to scroll * char height
+
+scrollUp_clearNextLine_320x200x256:
+    push cx
+    mov cx, [bp]
+    rep stosb              // clear a line
+    add di, [bp+2]
+    add si, [bp+2]
+
+    pop cx
+    loop scrollUp_clearNextLine_320x200x256
+
+    jmp scrollUp_returnFromVideoInterrupt
+
+
+
+/* =============================================================================
+================================================================================
+   Scroll active page down.
+
+Preconditions:
+  AH: 7
+  AL: number of rows to scroll down
+      (0 means all rows, clearing the area specified by CX and DX)
+  BH: attribute to be used on blank row
+  CH: row of upper left corner
+  CL: column of upper left corner
+  DH: row of lower right corner
+  DL: column of lower right corner
+
+Stack:
+  SS:BP    [2]  window width (in characters).
+  SS:BP+2  [2]  screen width
+  SS:BP+4  [2]  ???
+============================================================================= */
+scrollDown:
+    push ax
+    push cx
+    push dx
+    push bx
+    push bp
+    push di
+    push es
+    sub sp, 6              // allocate 6 bytes on the stack
+    mov bp, sp
+
+    cld
+    xor di, di
+    mov es, di
+
+    inc dl
+    sub dl, cl             // dl: window width
+    inc dh
+    sub dh, ch             // dh: height of area to scroll: window height
+
+    mov byte ptr [bp+1], 0
+    mov [bp], dl           // SS:BP: window width
+
+    cmp al, 0              // clear whole area?
+    jnz scrollDown_correctedAL
+
+    mov al, dh
+
+scrollDown_correctedAL:
+    add ch, dh             // ch: ulc row + window height
+
+    sub dh, al             // dh: number of rows to copy = window height - number of rows to scroll
+    mov dl, al             // dl: number of rows to scroll
+    mov ax, es:[0x44A]     // get screen width in text columns
+    mov [bp+2], ax         // SS:BP+2: screen width
+
+    mov di, cx
+    and di, 0xFF           // di: ulc column
+    sub di, ax             // di: ulc column - screen width
+
+    mov si, es:[0x449]     // get current video mode (1 byte)
+    and si, 0xFF           // si: current video mode
+    shl si, 1
+    jmp [si + scrollDownTableStart]
+
+
+/* =============================================================================
+   Scroll active page down: text modes.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: attribute to be used on blank row
+  CH: ulc row + window height
+  CL: ulc column
+  DH: number of rows to copy = window height - number of rows to scroll
+  DL: number of rows to scroll down
+  DI: ulc column - screen width
+
+Stack:
+  SS:BP    [2]  window width (in characters).
+  SS:BP+2  [2]  screen width;
+           [2]  (window width + screen width) * char width
+  SS:BP+4  [2]  ???
+
+Known:
+  char width: 2 bytes (1 byte for the char code the other for the attribute)
+  char height: 1
+  screen width: 40 or 80
+============================================================================= */
+scrollDown_text:
+    mul ch                 // ax: (ulc row + window height) * screen width
+    add di, ax             // di: (ulc row + window height) * screen width + ulc column - screen width
+    shl di, 1              // di: ((ulc row + window height) * screen width + ulc column - screen width) * char width
+    add di, es:[0x44E]     // di: ((ulc row + window height) * screen width + ulc column - screen width) * char width + active page offset
+
+    mov ch, 0
+    mov cl, dh             // cx: rows to copy
+
+    mov ah, 0
+    mov al, dl             // ax: rows to scroll
+    push ax                // PUSH: rows to scroll
+    mul word ptr [bp+2]    // ax: rows to scroll * screen width
+    shl ax, 1              // ax: rows to scroll * screen width * char width
+    mov si, di             // si: ((ulc row + window height) * screen width + ulc column - screen width) * char width + active page offset
+    sub si, ax             // si: ((ulc row + window height) * screen width + ulc column - screen width - rows to scroll * screen width) * char width + active page offset
+
+    mov ax, 0xB800         // ax: 0xB800
+    mov es, ax             // es: 0xB800
+    mov ds, ax             // ds: 0xB800
+
+    mov ax, [bp]           // ax: window width
+    add [bp+2], ax         // SS:BP+2: window width + screen width
+    shl word ptr [bp+2], 1 // SS:BP+2: (window width + screen width) * char width
+
+    jcxz scrollDown_doneCopyingLines_text
+
+scrollDown_copyNextLine_text:
+    push cx
+    mov cx, [bp]           // cx: window width
+    rep movsw              // copy a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_copyNextLine_text
+
+scrollDown_doneCopyingLines_text:
+    mov ah, bh             // attribute for blank row
+    mov al, ' '            // space into al
+    pop cx                 // POP: cx: rows to scroll
+
+scrollDown_clearNextLine_text:
+    push cx
+    mov cx, [bp]           // cx: window width
+    rep stosw              // clear a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_clearNextLine_text
+
+scrollDown_returnFromVideoInterrupt:
+    add sp, 6
+    pop es
+    pop di
+    pop bp
+    pop bx
+    pop dx
+    pop cx
+    pop ax
+    jmp returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Scroll active page down: 320 x 200 x 4.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: bit pattern to be used on blank row
+  CH: ulc row + window height
+  CL: ulc column
+  DH: number of rows to copy = window height - number of rows to scroll
+  DL: number of rows to scroll down
+  DI: ulc column - screen width
+
+Stack:
+  SS:BP    [2]  window width (in characters).
+  SS:BP+2  [2]  screen width;
+           [2]  (window width + screen width) * char width - 0x2000
+  SS:BP+4  [1]  rows to scroll * char height / 2;
+           [2]  window width * char width + 0x2000
+  SS:BP+5  [1]  rows to copy * char height / 2
+
+Known:
+  char width: 2 bytes (8 pixels times 2 bits per pixel)
+  char height: 8
+  screen width: 40
+============================================================================= */
+scrollDown_320x200x4:
+    shl dx, 1
+    shl dx, 1              // both 'rows to copy' and 'rows to scroll' times half the height of a character
+    mov [bp+4], dx         // SS:BP+4: rows to scroll * char height / 2; SS:BP+5: rows to copy * char height / 2
+    mul ch                 // ax: (ulc row + window height) * screen width
+    shl ax, 1
+    shl ax, 1              // ax: (ulc row + window height) * screen width * char height / 2
+    add di, ax             // di: (ulc row + window height) * screen width * char height / 2 + ulc column - screen width
+    shl di, 1              // di: ((ulc row + window height) * screen width * char height / 2 + ulc column - screen width) * char width
+    add di, 0x2000         // di: ((ulc row + window height) * screen width * char height / 2 + ulc column - screen width) * char width + 0x2000
+
+    mov ah, 0
+    mov al, [bp+4]         // ax: rows to scroll * char height / 2
+    push ax                // PUSH: rows to scroll * char height / 2
+    mul word ptr [bp+2]    // ax: rows to scroll * screen width * char height / 2
+    shl ax, 1              // ax: rows to scroll * screen width * char width * char height / 2
+    mov si, di             // si: ((ulc row + window height) * screen width * char height / 2 + ulc column - screen width) * char width + 0x2000
+    sub si, ax             // si: ((ulc row + window height) * screen width * char height / 2 + ulc column - screen width) * char width + 0x2000
+                           //     - rows to scroll * screen width * char width * char height / 2
+
+    mov ch, 0
+    mov cl, [bp+5]         // cx: rows to copy * char height / 2
+
+    mov ax, 0xB800         // ax: 0xB800
+    mov es, ax             // es: 0xB800
+    mov ds, ax             // ds: 0xB800
+
+    mov ax, [bp]           // ax: window width
+    add [bp+2], ax         // SS:BP+2: window width + screen width
+    shl word ptr [bp+2], 1 // SS:BP+2: (window width + screen width) * char width
+    sub word ptr [bp+2], 0x2000
+                           // SS:BP+2: (window width + screen width) * char width - 0x2000
+
+    mov ax, [bp]           // ax: window width
+    shl ax, 1              // ax: window width * char width
+    add ax, 0x2000         // ax: window width * char width + 0x2000
+    mov [bp+4], ax         // SS:BP+4: window width + 0x2000
+
+    jcxz scrollDown_doneCopyingLines_320x200x4
+
+scrollDown_copyNextLine_320x200x4:
+    push cx
+    mov cx, [bp]           // cx: window width
+    rep movsw              // copy a line
+    sub di, [bp+4]
+    sub si, [bp+4]
+    mov cx, [bp]           // cx: window width
+    rep movsw              // copy a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_copyNextLine_320x200x4
+
+scrollDown_doneCopyingLines_320x200x4:
+    mov al, bh             // bit pattern for blank row
+    mov ah, bh             // bit pattern for blank row
+    pop cx                 // POP: cx: rows to scroll * char height / 2
+
+scrollDown_clearNextLine_320x200x4:
+    push cx
+    mov cx, [bp]           // cx: window width
+    rep stosw              // clear a line
+    sub di, [bp+4]
+    sub si, [bp+4]
+    mov cx, [bp]           // cx: window width
+    rep stosw              // clear a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_clearNextLine_320x200x4
+
+    jmp scrollDown_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Scroll active page down: 640 x 200 x 2.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: bit pattern to be used on blank row
+  CH: ulc row + window height
+  CL: ulc column
+  DH: number of rows to copy = window height - number of rows to scroll
+  DL: number of rows to scroll down
+  DI: ulc column - screen width
+
+Stack:
+  SS:BP    [2]  window width (in characters).
+  SS:BP+2  [2]  screen width;
+           [2]  window width + screen width - 0x2000
+  SS:BP+4  [1]  rows to scroll * char height / 2;
+           [2]  window width + 0x2000
+  SS:BP+5  [1]  rows to copy * char height / 2
+
+Known:
+  char width: 1 byte (8 pixels times 1 bit per pixel)
+  char height: 8
+  screen width: 80
+============================================================================= */
+scrollDown_640x200x2:
+    shl dx, 1
+    shl dx, 1              // both 'rows to copy' and 'rows to scroll' times half the height of a character
+    mov [bp+4], dx         // SS:BP+4: rows to scroll * char height / 2; SS:BP+5: rows to copy * char height / 2
+    mul ch                 // ax: (ulc row + window height) * screen width
+    shl ax, 1
+    shl ax, 1              // ax: (ulc row + window height) * screen width * char height / 2
+    add di, ax             // di: (ulc row + window height) * screen width * char height / 2 + ulc column - screen width
+    add di, 0x2000         // di: (ulc row + window height) * screen width * char height / 2 + ulc column - screen width + 0x2000
+
+    mov ah, 0
+    mov al, [bp+4]         // ax: rows to scroll * char height / 2
+    push ax                // PUSH: rows to scroll * char height / 2
+    mul word ptr [bp+2]    // ax: rows to scroll * screen width * char height / 2
+    mov si, di             // si: (ulc row + window height) * screen width * char height / 2 + ulc column - screen width + 0x2000
+    sub si, ax             // si: (ulc row + window height) * screen width * char height / 2 + ulc column - screen width + 0x2000
+                           //     - rows to scroll * screen width * char height / 2
+
+    mov ch, 0
+    mov cl, [bp+5]         // cx: rows to copy * char height / 2
+
+    mov ax, 0xB800         // ax: 0xB800
+    mov es, ax             // es: 0xB800
+    mov ds, ax             // ds: 0xB800
+
+    mov ax, [bp]           // ax: window width
+    add [bp+2], ax         // SS:BP+2: window width + screen width
+    sub word ptr [bp+2], 0x2000
+                           // SS:BP+2: window width + screen width - 0x2000
+
+    mov ax, [bp]           // ax: window width
+    add ax, 0x2000         // ax: window width + 0x2000
+    mov [bp+4], ax         // SS:BP+4: window width + 0x2000
+
+    jcxz scrollDown_doneCopyingLines_640x200x2
+
+scrollDown_copyNextLine_640x200x2:
+    push cx
+    mov cx, [bp]           // cx: window width
+    rep movsb              // copy a line
+    sub di, [bp+4]
+    sub si, [bp+4]
+    mov cx, [bp]           // cx: window width
+    rep movsb              // copy a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_copyNextLine_640x200x2
+
+scrollDown_doneCopyingLines_640x200x2:
+    mov al, bh             // bit pattern for blank row
+    pop cx                 // POP: cx: rows to scroll * char height / 2
+
+scrollDown_clearNextLine_640x200x2:
+    push cx
+    mov cx, [bp]           // cx: window width
+    rep stosb              // clear a line
+    sub di, [bp+4]
+    sub si, [bp+4]
+    mov cx, [bp]           // cx: window width
+    rep stosb              // clear a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_clearNextLine_640x200x2
+
+    jmp scrollDown_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Scroll active page down: planar 16 colour modes.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: colour to be used on blank row
+  CH: ulc row + window height
+  CL: ulc column
+  DH: number of rows to copy = window height - number of rows to scroll
+  DL: number of rows to scroll down
+  DI: ulc column - screen width
+
+Stack:
+  SS:BP    [2]  window width (in characters).
+  SS:BP+2  [2]  screen width;
+           [2]  window width + screen width
+  SS:BP+4  [1]  rows to scroll
+  SS:BP+5  [1]  rows to copy
+
+Known:
+  char width: 1 byte (8 pixels times 1 bit per pixel)
+  char height: 8, 14 or 16
+  screen width: 40 or 80
+============================================================================= */
+scrollDown_gfx16:
+    mov [bp+4], dx         // SS:BP+4: rows to scroll; SS:BP+5: rows to copy
+    mul ch                 // ax: (ulc row + window height) * screen width
+    mov cx, es:[0x485]     // cx: char height
+    mul cx                 // ax: (ulc row + window height) * screen width * char height
+    add di, ax             // di: (ulc row + window height) * screen width * char height + ulc column - screen width
+
+    mov ax, cx             // ax: char height
+    mul byte ptr [bp+4]    // ax: rows to scroll * char height
+    push ax                // PUSH: rows to scroll * char height
+    mul word ptr [bp+2]    // ax: rows to scroll * char height * screen width
+    mov si, di             // si: (ulc row + window height) * screen width * char height + ulc column - screen width
+    sub si, ax             // si: (ulc row + window height) * screen width * char height + ulc column - screen width - rows to scroll * char height * screen width
+
+    mov ax, cx             // ax: char height
+    mul byte ptr [bp+5]    // ax: rows to copy * char height
+    mov cx, ax             // cx: rows to copy * char height
+
+    mov ax, 0xA000         // ax: 0xA000
+    mov es, ax             // es: 0xA000
+    mov ds, ax             // ds: 0xA000
+
+    mov ax, [bp]           // ax: window width
+    add [bp+2], ax         // SS:BP+2: window width + screen width
+
+    jcxz scrollDown_doneCopyingLines_gfx16
+
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    or al, 1
+    out dx, al             // set write mode 1
+
+scrollDown_copyNextLine_gfx16:
+    push cx
+    mov cx, [bp]           // cx: window width
+    rep movsb              // copy a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_copyNextLine_gfx16
+
+scrollDown_doneCopyingLines_gfx16:
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    and al, 0xFC
+    or al, 2
+    out dx, al             // set write mode 2
+
+    mov al, bh             // colour for blank row
+    pop cx                 // POP: cx: rows to scroll * char height
+
+scrollDown_clearNextLine_gfx16:
+    push cx
+    mov cx, [bp]           // cx: window width
+    rep stosb              // clear a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_clearNextLine_gfx16
+
+    mov dx, 0x3CE
+    mov al, 5
+    out dx, al
+    inc dx
+    in al, dx              // get graphics-mode register value
+    and al, 0xFC
+    out dx, al             // set write mode 0 back
+
+    jmp scrollDown_returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Scroll active page down: 320 x 200 x 256.
+
+Preconditions:
+  ES: 0x0000
+  AX: screen width in text columns
+  BH: colour to be used on blank row
+  CH: ulc row + window height
+  CL: ulc column
+  DH: number of rows to copy = window height - number of rows to scroll
+  DL: number of rows to scroll down
+  DI: ulc column - screen width
+
+Stack:
+  SS:BP    [2]  window width (in characters);
+           [2]  window width * char width
+  SS:BP+2  [2]  screen width;
+           [2]  (window width + screen width) * char width
+  SS:BP+4  [1]  rows to scroll
+  SS:BP+5  [1]  rows to copy
+
+Known:
+  char width: 8 bytes (8 pixels times 8 bits per pixel)
+  char height: 8
+  screen width: 40
+============================================================================= */
+scrollDown_320x200x256:
+    mov [bp+4], dx         // SS:BP+4: rows to scroll; SS:BP+5: rows to copy
+    mul ch                 // ax: (ulc row + window height) * screen width
+    mov cx, es:[0x485]     // cx: char height (8)
+    mul cx                 // ax: (ulc row + window height) * screen width * char height
+    add di, ax             // di: (ulc row + window height) * screen width * char height + ulc column - screen width
+
+    mov ax, cx             // ax: char height
+    mul byte ptr [bp+4]    // ax: rows to scroll * char height
+    push ax                // PUSH: rows to scroll * char height
+    mul word ptr [bp+2]    // ax: rows to scroll * char height * screen width
+    mov si, di             // si: (ulc row + window height) * screen width * char height + ulc column - screen width
+    sub si, ax             // si: (ulc row + window height) * screen width * char height + ulc column - screen width - rows to scroll * char height * screen width
+
+    mov ax, cx             // ax: char height
+    mul byte ptr [bp+5]    // ax: rows to copy * char height
+    mov cx, ax             // cx: rows to copy * char height
+
+    mov ax, 0xA000         // ax: 0xA000
+    mov es, ax             // es: 0xA000
+    mov ds, ax             // ds: 0xA000
+
+    mov ax, [bp]           // ax: window width
+    add [bp+2], ax         // SS:BP+2: window width + screen width
+
+    shl di, 1
+    shl di, 1
+    shl di, 1              // di *= char width
+    shl si, 1
+    shl si, 1
+    shl si, 1              // si *= char width
+    shl word ptr [bp], 1
+    shl word ptr [bp], 1
+    shl word ptr [bp], 1   // [bp] *= char width
+    shl word ptr [bp+2], 1
+    shl word ptr [bp+2], 1
+    shl word ptr [bp+2], 1 // [bp+2] *= char width
+
+    jcxz scrollDown_doneCopyingLines_320x200x256
+
+scrollDown_copyNextLine_320x200x256:
+    push cx
+    mov cx, [bp]           // cx: window width * char width
+    rep movsb              // copy a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_copyNextLine_320x200x256
+
+scrollDown_doneCopyingLines_320x200x256:
+    mov al, bh             // colour for blank row
+    pop cx                 // POP: cx: rows to scroll * char height
+
+scrollDown_clearNextLine_320x200x256:
+    push cx
+    mov cx, [bp]           // cx: window width * char width
+    rep stosb              // clear a line
+    sub di, [bp+2]
+    sub si, [bp+2]
+
+    pop cx
+    loop scrollDown_clearNextLine_320x200x256
+
+    jmp scrollDown_returnFromVideoInterrupt
+
+
+
+/* -----------------------------------------------------------------------------
+   Convert pixels to bits.
+   This function converts each of 8 four-colour pixels into one bit. Zero valued
+   pixels become 0, the remaining pixels 1.
+
+Input:
+   AX: the 8 pixels to convert.
+
+Returns:
+   BL: the 8 bits in which the pixels were converted.
+
+Destroys: AX, CX, DX.
+----------------------------------------------------------------------------- */
+convertPixelsToBits:
+    mov cx, 8
+    xor bx, bx             // clear bx
+
+cptb_nextBit:
+    xor dx, dx             // clear dx
+    shl ax, 1
+    adc dx, 0
+    shl ax, 1
+    adc dx, 0
+    jz cptb_writeBit
+    stc
+
+cptb_writeBit:
+    rcl bx, 1
+    loop cptb_nextBit
+    ret                    // return from call
+
+
+/* -----------------------------------------------------------------------------
+   Find character for bit pattern.
+   This function tries to find a character to match the bit pattern in SS:BP.
+
+Input:
+   SS:BP: address of bit pattern to find.
+
+Returns:
+   AL: character that matched the bit pattern or 0 if it didn't match any.
+   AH: 0
+
+Destroys: CX, SI, DI, ES, DS.
+----------------------------------------------------------------------------- */
+findCharacterForBitPattern:
+    push ss
+    pop ds
+    mov si, bp
+
+    mov di, 0xC000
+    mov es, di             // load font segment into es
+    mov di, 8              // offset of first character to check
+
+    mov ax, 1
+
+checkNextChar:
+    push si
+    push di
+    mov cx, 4
+    rep cmpsw
+    pop di
+    pop si
+    jz foundAMatch
+    add di, 8
+    inc al
+    jnz checkNextChar
+
+foundAMatch:
+    ret
+
+
+/* =============================================================================
+================================================================================
+   Read character/attribute at current cursor position.
+
+Preconditions:
+  AH: 8
+  BH: display page (to be ignored for modes 4, 5, 6)
+
+Returns:
+  AL: read character
+  AH: attribute of character (text modes only)
+============================================================================= */
+readCharAttrAtCursor:
+    mov si, 0x40
+    mov ds, si
+
+    cmp byte ptr [0x49], 4
+    jnb readCharAttrAtCursor_gfxModes
+
+    push dx
+    push bx
+
+    mov bl, bh             // display page to bl
+    xor bh, bh             // clear bh
+
+    mov ax, [0x4C]         // get regen buffer size
+    mul bx
+    mov si, ax             // put regen buffer start for display page in si
+
+    shl bx, 1              // display page times 2
+    add bx, 0x50
+    mov al, [bx+1]
+    cbw                    // cursor line now in ax
+    mov dx, [0x4A]         // get screen width in text columns
+    shl dx, 1
+    mul dx
+    mov dl, [bx]           // cursor column in dx (dh will already be 0, because of previous mul-instruction)
+    shl dx, 1              // multiply by 2
+    add ax, dx
+    add si, ax
+    mov ax, 0xB800
+    mov ds, ax             // DS:SI now contains source address
+
+    lodsw
+
+    pop bx
+    pop dx
+    jmp returnFromVideoInterrupt
+
+readCharAttrAtCursor_gfxModes:
+    push cx
+    push dx
+    push bx
+    push bp
+    push di
+    push es
+    sub sp, 8              // allocate 8 bytes on the stack
+    mov bp, sp
+    cld
+
+    mov al, [0x51]
+    cbw                    // cursor line now in ax
+    mov dx, 320
+    mul dx
+    mov si, ax             // cursor line times 320 in si
+    mov dl, [0x50]         // cursor column in dx (dh will already be 0, because of previous mul-instruction)
+    xor di, di             // clear di
+    mov ax, 0xB800
+
+    cmp byte ptr [0x49], 6
+    jb readCharAttrAtCursor_320x200x4
+
+
+/* =============================================================================
+   Read character at cursor position: 640 x 200 x 2.
+
+Preconditions:
+  DI: 0
+  AX: 0xB800
+  SI: cursor line (at 0000:0051) times 320
+  DX: cursor column (at 0000:0050)
+============================================================================= */
+    add si, dx
+    mov ds, ax             // DS:SI now contains source address
+
+readChar_640x200x2:
+    lodsb
+    mov [bp+di], al
+    inc di
+
+    add si, 0x1FFF
+    lodsb
+    mov [bp+di], al
+    inc di
+
+    sub si, 0x2001 - 0x50
+    cmp di, 8
+    jb readChar_640x200x2
+
+readCharAttrAtCursor_gfxModes_returnFromVideoInterrupt:
+    call findCharacterForBitPattern
+    add sp, 8
+    pop es
+    pop di
+    pop bp
+    pop bx
+    pop dx
+    pop cx
+    jmp returnFromVideoInterrupt
+
+
+/* =============================================================================
+   Read character at cursor position: 320 x 200 x 4.
+
+Preconditions:
+  DI: 0
+  AX: 0xB800
+  SI: cursor line (at 0000:0051) times 320
+  DX: cursor column (at 0000:0050)
+============================================================================= */
+readCharAttrAtCursor_320x200x4:
+    shl dx, 1              // multiplied by 2 (width of a character is 8 pixels; 4 pixels per byte)
+    add si, dx
+    mov ds, ax             // DS:SI now contains source address
+
+readChar_320x200x4:
+    lodsw
+    xchg al, ah
+    call convertPixelsToBits
+    mov [bp+di], bl
+    inc di
+
+    add si, 0x1FFE
+    lodsw
+    xchg al, ah
+    call convertPixelsToBits
+    mov [bp+di], bl
+    inc di
+
+    sub si, 0x2002 - 0x50
+    cmp di, 8
+    jb readChar_320x200x4
+    jmp readCharAttrAtCursor_gfxModes_returnFromVideoInterrupt
+
+
+
+writeCharAtCursor:
+setPalette:
+writePixel:
+readPixel:
+writeCharAsTTY:
+    jmp returnFromVideoInterrupt
+
+
+/* =============================================================================
+================================================================================
+   Read current video state.
+
+Preconditions:
+  AH: 15
+
+Returns:
+  AH: current video mode
+  AL: width of screen in characters
+  BH: active video page
+============================================================================= */
+readVideoState:
+    mov si, 0x40
+    mov ds, si
+    mov ax, [0x49]
+    xchg ah, al
+    mov bh, [0x62]
+    jmp returnFromVideoInterrupt
