@@ -2,7 +2,7 @@
    Author:  Gerard Visser
    e-mail:  visser.gerard(at)gmail.com
 
-   Copyright (C) 2014 Gerard Visser.
+   Copyright (C) 2014, 2015 Gerard Visser.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -90,7 +90,10 @@ static void printCallDisp (instruction_t* instr, int maxInstrLength, unsigned sh
 static void printCallImmImm (instruction_t* instr, int maxInstrLength);
 static void printCBW (instruction_t* instr);
 static void printConditionalJump (instruction_t* instr, int maxInstrLength, unsigned short instrOffset);
+static void printCoprocessorInstruction (instruction_t* instr, int maxInstrLength);
 static void printDB (instruction_t* instr);
+static void printEnter (instruction_t* instr, int maxInstrLength);
+static void printExtraInstruction (instruction_t* instr, int maxInstrLength);
 static void printIncRm (instruction_t* instr, int maxInstrLength);
 static void printInOut (instruction_t* instr, int maxInstrLength);
 static void printInstructionBytes (instruction_t* instr);
@@ -111,6 +114,7 @@ static void printPushReg (instruction_t* instr);
 static void printPushSeg (instruction_t* instr);
 static void printRet (instruction_t* instr, int maxInstrLength);
 static void printShift (instruction_t* instr, int maxInstrLength);
+static void printShiftImm (instruction_t* instr, int maxInstrLength);
 static void printSpaces (int total);
 static void printStringInstruction (instruction_t* instr);
 static void printTestAccImm (instruction_t* instr, int maxInstrLength);
@@ -165,7 +169,7 @@ int printer_t::printInstruction (address_t* address) {
 
   case 1: /* 40 - 7F */
     switch (buf[0] & 0x30) {
-    case 0x20: printDB (&instr); break; /* undefined. */
+    case 0x20: printExtraInstruction (&instr, maxInstrLength); break;
     case 0x30: printConditionalJump (&instr, maxInstrLength, address->offset ()); break;
     default: printPushReg (&instr);
     }
@@ -217,12 +221,12 @@ int printer_t::printInstruction (address_t* address) {
     switch (buf[0] & 0x30) {
     case 0: /* C0 - CF */
       switch (buf[0] & 0xE) {
-      case 0:
-      case 8: printDB (&instr); break; /* undefined. */
+      case 0: printShiftImm (&instr, maxInstrLength); break;
       case 2:
       case 10: printRet (&instr, maxInstrLength); break;
       case 4: printLes (&instr, maxInstrLength); break;
       case 6: printMovRmImm (&instr, maxInstrLength); break;
+      case 8: printEnter (&instr, maxInstrLength); break;
       case 12:
       case 14: printInterrupt (&instr, maxInstrLength);
       }
@@ -232,7 +236,7 @@ int printer_t::printInstruction (address_t* address) {
       switch (buf[0] & 0xC) {
       case 0: printShift (&instr, maxInstrLength); break;
       case 4: printAam (&instr, maxInstrLength); break;
-      default: printDB (&instr); /* co-processor escape codes: treat as undefined. */
+      default: printCoprocessorInstruction (&instr, maxInstrLength);
       }
       break;
 
@@ -346,6 +350,7 @@ void printer_t::printRegisters (void) {
   ___CBTPOP;
 }
 
+static void printMiscCoprocessorInstruction (instruction_t* instr);
 static void printModrm (instruction_t* instr);
 static void printModrm (instruction_t* instr, const bool dstRrr, const bool wide);
 static void printModrmPointer (instruction_t* instr, const bool wide);
@@ -362,6 +367,81 @@ static const char* getAddGroupInstructionName (int idByte) {
   case OPC_SUB: return "SUB     ";
   case OPC_XOR: return "XOR     ";
   case OPC_CMP: return "CMP     ";
+  }
+}
+
+static const char* getFaddGroupInstructionName (int idByte) {
+  switch (idByte >> 3 & 7) {
+  case 0: return "FADD    ";
+  case 1: return "FMUL    ";
+  case 2: return "FCOM    ";
+  case 3: return "FCOMP   ";
+  case 4: return "FSUB    ";
+  case 5: return "FSUBR   ";
+  case 6: return "FDIV    ";
+  case 7: return "FDIVR   ";
+  }
+}
+
+static const char* getFaddpGroupInstructionName (int idByte) {
+  switch (idByte >> 3 & 7) {
+  case 0: return "FADDP   ";
+  case 1: return "FMULP   ";
+  case 2: return "FCOMP   "; /*!!!*/
+  case 3: return "FCOMPP  "; /*!!*/
+  case 4: return "FSUBRP  ";
+  case 5: return "FSUBP   ";
+  case 6: return "FDIVRP  ";
+  case 7: return "FDIVP   ";
+  }
+}
+
+static const char* getFiaddGroupInstructionName (int idByte) {
+  switch (idByte >> 3 & 7) {
+  case 0: return "FIADD   ";
+  case 1: return "FIMUL   ";
+  case 2: return "FICOM   ";
+  case 3: return "FICOMP  ";
+  case 4: return "FISUB   ";
+  case 5: return "FISUBR  ";
+  case 6: return "FIDIV   ";
+  case 7: return "FIDIVR  ";
+  }
+}
+
+static const char* getFildGroupInstructionName (int idByte) {
+  switch (idByte >> 3 & 3) {
+  case 0: return "FILD    ";
+  case 1: return "???     ";
+  case 2: return "FIST    ";
+  case 3: return "FISTP   ";
+  }
+}
+
+static const char* getFldenvGroupInstructionName (int idByte) {
+  switch (idByte >> 3 & 3) {
+  case 0: return "FLDENV  ";
+  case 1: return "FLDCW   ";
+  case 2: return "FSTENV  ";
+  case 3: return "FSTCW   ";
+  }
+}
+
+static const char* getFldGroupInstructionName (int idByte) {
+  switch (idByte >> 3 & 3) {
+  case 0: return "FLD     ";
+  case 1: return "???     ";
+  case 2: return "FST     ";
+  case 3: return "FSTP    ";
+  }
+}
+
+static const char* getFrstorGroupInstructionName (int idByte) {
+  switch (idByte >> 3 & 3) {
+  case 0: return "FRSTOR  ";
+  case 1: return "???     ";
+  case 2: return "FSAVE   ";
+  case 3: return "FSTSW   ";
   }
 }
 
@@ -630,12 +710,311 @@ static void printConditionalJump (instruction_t* instr, int maxInstrLength, unsi
   ___BTPOP;
 }
 
+static void printCoprocessorInstruction (instruction_t* instr, int maxInstrLength) {
+  ___BTPUSH;
+
+  /* 8087 instructions. */
+  instr->illegal = true;
+
+  instr->size = 2 + modrmExtraLength (instr->bytes[1]);
+  if (instr->size <= maxInstrLength) {
+    instr->append ("        ");
+
+    switch (instr->bytes[0] & 7) {
+    case 0:
+      instr->append (getFaddGroupInstructionName (instr->bytes[1]));
+      if (instr->bytes[1] >> 6 == 3) {
+        const int instrCode = instr->bytes[1] >> 3 & 7;
+        if (instrCode < 2 | instrCode > 3) {
+          instr->append ("ST,");
+        }
+        instr->append ("ST(%d)", instr->bytes[1] & 7);
+      } else {
+        instr->append ("DWORD PTR ");
+        printModrmPointer (instr, true);
+      }
+      break;
+
+    case 1:
+      if (instr->bytes[1] >> 6 != 3) {
+        if ((instr->bytes[1] & 0x20) == 0) {
+          //instr->illegal = (instr->bytes[1] & 0x38) == 8;
+          instr->append (getFldGroupInstructionName (instr->bytes[1]));
+          instr->append ("DWORD PTR ");
+        } else {
+          instr->append (getFldenvGroupInstructionName (instr->bytes[1]));
+        }
+        printModrmPointer (instr, true);
+      } else {
+        printMiscCoprocessorInstruction (instr);
+      }
+      break;
+
+    case 2:
+      if (instr->bytes[1] >> 6 != 3) {
+        instr->append (getFiaddGroupInstructionName (instr->bytes[1]));
+        instr->append ("DWORD PTR ");
+        printModrmPointer (instr, true);
+      } else {
+        instr->append ("???");
+        instr->illegal = true;
+      }
+      break;
+
+    case 3:
+      if (instr->bytes[1] >> 6 != 3) {
+        if ((instr->bytes[1] & 0x20) == 0) {
+          //instr->illegal = (instr->bytes[1] & 0x38) == 8;
+          instr->append (getFildGroupInstructionName (instr->bytes[1]));
+          instr->append ("DWORD PTR ");
+        } else {
+          switch (instr->bytes[1] >> 3 & 3) {
+          case 0: instr->append ("???     "); instr->illegal = true; break;
+          case 1: instr->append ("FLD     "); break;
+          case 2: instr->append ("???     "); instr->illegal = true; break;
+          case 3: instr->append ("FSTP    ");
+          }
+          instr->append ("TBYTE PTR ");
+        }
+        printModrmPointer (instr, true);
+      } else {
+        switch (instr->bytes[1] & 0x3F) {
+        case 0x20: instr->append ("FENI"); break;
+        case 0x21: instr->append ("FDISI"); break;
+        case 0x22: instr->append ("FCLEX"); break;
+        case 0x23: instr->append ("FINIT"); break;
+        case 0x24: instr->append ("FSETPM"); instr->illegal = true; /* 80287 instruction. */ break;
+        default: instr->append ("???"); instr->illegal = true;
+        }
+      }
+      break;
+
+    case 4:
+      if (instr->bytes[1] >> 6 == 3) {
+        /* Here, for some reason, FSUBR precedes FSUB and FDIVR precedes FDIV! */
+        int idByte = instr->bytes[1];
+        if ((idByte & 0x20) != 0) {
+          idByte ^= 0x08;
+        }
+        instr->append (getFaddGroupInstructionName (idByte));
+        const int instrCode = instr->bytes[1] >> 3 & 7;
+        instr->append ("ST(%d)", instr->bytes[1] & 7);
+        if (instrCode < 2 | instrCode > 3) {
+          instr->append (",ST");
+        }
+      } else {
+        instr->append (getFaddGroupInstructionName (instr->bytes[1]));
+        instr->append ("QWORD PTR ");
+        printModrmPointer (instr, true);
+      }
+      break;
+
+    case 5:
+      if (instr->bytes[1] >> 6 != 3) {
+        //instr->illegal = (instr->bytes[1] & 0x18) == 8;
+        if ((instr->bytes[1] & 0x20) == 0) {
+          instr->append (getFldGroupInstructionName (instr->bytes[1]));
+          instr->append ("QWORD PTR ");
+        } else {
+          instr->append (getFrstorGroupInstructionName (instr->bytes[1]));
+        }
+        printModrmPointer (instr, true);
+      } else if (instr->bytes[1] < 0xE0) {
+        switch (instr->bytes[1] >> 3 & 3) {
+        case 0: instr->append ("FFREE   "); break;
+        case 1: instr->append ("FXCH    "); break; /* Zit ook op D9 C8 e.v.: is deze hier illegaal? */
+        case 2: instr->append ("FST     "); break;
+        case 3: instr->append ("FSTP    "); /* Zit ook op D9 D8 e.v.: is die daar illegaal? */
+        }
+        instr->append ("ST(%d)", instr->bytes[1] & 7);
+      } else {
+        instr->append ("???");
+        instr->illegal = true;
+      }
+      break;
+
+    case 6:
+      if (instr->bytes[1] >> 6 != 3) {
+        instr->append (getFiaddGroupInstructionName (instr->bytes[1]));
+        instr->append ("WORD PTR ");
+        printModrmPointer (instr, true);
+      } else {
+        instr->append (getFaddpGroupInstructionName (instr->bytes[1]));
+        const int instrCode = instr->bytes[1] >> 3 & 7;
+        instr->append ("ST(%d)", instr->bytes[1] & 7);
+        if (instrCode < 2 | instrCode > 3) {
+          instr->append (",ST");
+        }
+        /* NOOT: FCOMPP alleen geldig voor S(1);
+                 Zijn de FCOMP instrcuties hier ueberhaupt geldig?? */
+        //instr->illegal = instr->bytes[1] > 0xD7 & instr->bytes[1] < 0xE0 & instr->bytes[1] != 0xD9;
+      }
+      break;
+
+    case 7:
+      if (instr->bytes[1] >> 6 != 3) {
+        if ((instr->bytes[1] & 0x20) == 0) {
+          //instr->illegal = (instr->bytes[1] & 0x38) == 8;
+          instr->append (getFildGroupInstructionName (instr->bytes[1]));
+          instr->append ("WORD PTR ");
+        } else {
+          switch (instr->bytes[1] >> 3 & 3) {
+          case 0: instr->append ("FBLD    TBYTE PTR "); break;
+          case 1: instr->append ("FILD    QWORD PTR "); break;
+          case 2: instr->append ("FBSTP   TBYTE PTR "); break;
+          case 3: instr->append ("FISTP   QWORD PTR ");
+          }
+        }
+        printModrmPointer (instr, true);
+      } else if (instr->bytes[1] < 0xE0) {
+        /* Al deze instructies zijn ook te vinden op DD C0 t/m DD DF: zijn deze hier illegaal? */
+        switch (instr->bytes[1] >> 3 & 3) {
+        case 0: instr->append ("FFREE   "); break;
+        case 1: instr->append ("FXCH    "); break;
+        case 2: instr->append ("FST     "); break;
+        case 3: instr->append ("FSTP    ");
+        }
+        instr->append ("ST(%d)", instr->bytes[1] & 7);
+      } else {
+        instr->append ("???");
+        instr->illegal = true;
+      }
+      break;
+    }
+  } else {
+    printDB (instr);
+  }
+
+  ___BTPOP;
+}
+
 static void printDB (instruction_t* instr) {
   ___BTPUSH;
 
   instr->size = 1;
   instr->append ("DB      %02X", instr->bytes[0]);
   instr->illegal = true;
+
+  ___BTPOP;
+}
+
+static void printEnter (instruction_t* instr, int maxInstrLength) {
+  ___BTPUSH;
+
+  /* 80186 instructions. */
+  instr->illegal = true;
+  if ((instr->bytes[0] & 1) == 0) {
+    instr->size = 4;
+    if (instr->size <= maxInstrLength) {
+      instr->append ("ENTER   %04X,%02X", readWord (instr->bytes, 1), instr->bytes[3]);
+    } else {
+      printDB (instr);
+    }
+  } else {
+    instr->size = 1;
+    instr->append ("LEAVE");
+  }
+
+  ___BTPOP;
+}
+
+static void printExtraInstruction (instruction_t* instr, int maxInstrLength) {
+  ___BTPUSH;
+
+  /* 80186 instructions. */
+  instr->illegal = true;
+  switch (instr->bytes[0] & 0xF) {
+  case 0x0:
+    instr->size = 1;
+    instr->append ("PUSHA");
+    break;
+
+  case 0x1:
+    instr->size = 1;
+    instr->append ("POPA");
+    break;
+
+  case 0x2: {
+    /* Illegal if modrm-byte specifies two registers. */
+    const int dispLen = modrmExtraLength (instr->bytes[1]);
+    instr->size = 2 + dispLen;
+    if (instr->size <= maxInstrLength) {
+      //instr->illegal = instr->bytes[1] >> 6 == 3;
+      instr->append ("BOUND   ");
+      printModrm (instr, true, true);
+    } else {
+      printDB (instr);
+    }
+  } break;
+
+  case 0x8:
+    instr->size = 3;
+    if (instr->size <= maxInstrLength) {
+      instr->append ("PUSH    %04X", readWord (instr->bytes, 1));
+    } else {
+      printDB (instr);
+    }
+    break;
+
+  case 0x9: {
+    const int dispLen = modrmExtraLength (instr->bytes[1]);
+    instr->size = 4 + dispLen;
+    if (instr->size <= maxInstrLength) {
+      instr->append ("IMUL    ");
+      printModrm (instr, true, true);
+      instr->append (',');
+      instr->append ("%04X", readWord (instr->bytes, 2 + dispLen));
+    } else {
+      printDB (instr);
+    }
+  } break;
+
+  case 0xA:
+    instr->size = 2;
+    if (instr->size <= maxInstrLength) {
+      instr->append ("PUSH    ");
+      instr->appendSignedByte (instr->bytes[1]);
+    } else {
+      printDB (instr);
+    }
+    break;
+
+  case 0xB: {
+    const int dispLen = modrmExtraLength (instr->bytes[1]);
+    instr->size = 3 + dispLen;
+    if (instr->size <= maxInstrLength) {
+      instr->append ("IMUL    ");
+      printModrm (instr, true, true);
+      instr->append (',');
+      instr->appendSignedByte (instr->bytes[2 + dispLen]);
+    } else {
+      printDB (instr);
+    }
+  } break;
+
+  case 0xC:
+    instr->size = 1;
+    instr->append ("INSB");
+    break;
+
+  case 0xD:
+    instr->size = 1;
+    instr->append ("INSW");
+    break;
+
+  case 0xE:
+    instr->size = 1;
+    instr->append ("OUTSB");
+    break;
+
+  case 0xF:
+    instr->size = 1;
+    instr->append ("OUTSW");
+    break;
+
+  default:
+    printDB (instr);
+  }
 
   ___BTPOP;
 }
@@ -804,6 +1183,57 @@ static void printLoop (instruction_t* instr, int maxInstrLength, unsigned short 
   }
 
   ___BTPOP;
+}
+
+static void printMiscCoprocessorInstruction (instruction_t* instr) {
+  if (instr->bytes[1] == 0xD0) {
+
+    instr->append ("FNOP");
+
+  } else if (instr->bytes[1] < 0xE0) {
+
+    switch (instr->bytes[1] >> 3 & 3) {
+    case 0: instr->append ("FLD     "); break;
+    case 1: instr->append ("FXCH    "); break;
+    case 2: instr->append ("???     "); instr->illegal = true; break;
+    case 3: instr->append ("FSTP    ");
+    }
+    instr->append ("ST(%d)", instr->bytes[1] & 7);
+
+  } else {
+
+    switch (instr->bytes[1] & 0x1F) {
+    case 0x00: instr->append ("FCHS"); break;
+    case 0x01: instr->append ("FABS"); break;
+    case 0x04: instr->append ("FTST"); break;
+    case 0x05: instr->append ("FXAM"); break;
+    case 0x08: instr->append ("FLD1"); break;
+    case 0x09: instr->append ("FLDL2T"); break;
+    case 0x0A: instr->append ("FLDL2E"); break;
+    case 0x0B: instr->append ("FLDPI"); break;
+    case 0x0C: instr->append ("FLDLG2"); break;
+    case 0x0D: instr->append ("FLDLN2"); break;
+    case 0x0E: instr->append ("FLDZ"); break;
+    case 0x10: instr->append ("F2XM1"); break;
+    case 0x11: instr->append ("FYL2X"); break;
+    case 0x12: instr->append ("FPTAN"); break;
+    case 0x13: instr->append ("FPATAN"); break;
+    case 0x14: instr->append ("FXTRACT"); break;
+    case 0x15: instr->append ("FPREM1"); instr->illegal = true; /* 80387 instruction. */ break;
+    case 0x16: instr->append ("FDECSTP"); break;
+    case 0x17: instr->append ("FINCSTP"); break;
+    case 0x18: instr->append ("FPREM"); break;
+    case 0x19: instr->append ("FYL2XP1"); break;
+    case 0x1A: instr->append ("FSQRT"); break;
+    case 0x1B: instr->append ("FSINCOS"); instr->illegal = true; /* 80387 instruction. */ break;
+    case 0x1C: instr->append ("FRNDINT"); break;
+    case 0x1D: instr->append ("FSCALE"); break;
+    case 0x1E: instr->append ("FSIN"); instr->illegal = true; /* 80387 instruction. */ break;
+    case 0x1F: instr->append ("FCOS"); instr->illegal = true; /* 80387 instruction. */ break;
+    default: instr->append ("???"); instr->illegal = true;
+    }
+
+  }
 }
 
 static void printModrm (instruction_t* instr) {
@@ -1092,6 +1522,25 @@ static void printShift (instruction_t* instr, int maxInstrLength) {
     } else {
       instr->append (",1");
     }
+  } else {
+    printDB (instr);
+  }
+
+  ___BTPOP;
+}
+
+static void printShiftImm (instruction_t* instr, int maxInstrLength) {
+  ___BTPUSH;
+
+  /* 80186 instruction. */
+  instr->illegal = true;
+  const int dispLen = modrmExtraLength (instr->bytes[1]);
+  instr->size = 3 + dispLen;
+  if (instr->size <= maxInstrLength) {
+    instr->append (getShiftInstructionName (instr->bytes[1]));
+    printPointerType (instr);
+    printModrmPointer (instr, instr->bytes[0] & 1);
+    instr->append (",%02X", instr->bytes[2 + dispLen]);
   } else {
     printDB (instr);
   }
