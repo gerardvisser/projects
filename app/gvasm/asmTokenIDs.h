@@ -2,7 +2,7 @@
    Author:  Gerard Visser
    e-mail:  visser.gerard(at)gmail.com
 
-   Copyright (C) 2014 Gerard Visser.
+   Copyright (C) 2014, 2015 Gerard Visser.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -26,9 +26,11 @@
 #define WIDTH_TID_PCAT  3
 #define WIDTH_TID_PWIDE 1 /* Only for TID_CAT_PTRDETERMINER, TID_CAT_REGISTER, TID_CAT_SEGREGISTER. */
 
+#define SEGMENT_OVERRIDE_ID_LOCATION (WIDTH_BLTYPE + WIDTH_TID_PCAT + WIDTH_IID_GRP + 3)
+
 #define MASK_TID_PCAT             ((1 << WIDTH_BLTYPE + WIDTH_TID_PCAT) - 1)
 #define MASK_TID_PWIDE            (1 << WIDTH_BLTYPE + WIDTH_TID_PCAT)
-#define MASK_TID_SEGMENT_OVERRIDE (-1 << 2 | (1 << WIDTH_BLTYPE + WIDTH_TID_PCAT + WIDTH_IID_GRP + 3) - 1)
+#define MASK_TID_SEGMENT_OVERRIDE (-1 << SEGMENT_OVERRIDE_ID_LOCATION + 2 | (1 << SEGMENT_OVERRIDE_ID_LOCATION) - 1)
 
 #define TID_CAT_INSTRUCTION   (1 << WIDTH_BLTYPE | BLTYPE_PRIMARY)
 #define TID_CAT_PTRDETERMINER (2 << WIDTH_BLTYPE | BLTYPE_PRIMARY)
